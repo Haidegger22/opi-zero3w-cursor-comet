@@ -87,4 +87,10 @@ ffmpeg -f x11grab -video_size 1024x600 -i :0 -frames:v 1 -draw_mouse 1 -y /tmp/s
 В начале `cursor-comet.py`: `CORE_R` (ядро), `HALO_R` (ореол), `NEON` (цвет),
 `TTL` (длина хвоста), `W/H` (размер окна), частота — `GLib.timeout_add(16, ...)`.
 
+## Связанные проекты
 
+- **[opi-zero3w-desktop-widgets](https://github.com/Haidegger22/opi-zero3w-desktop-widgets)** — виджеты рабочего стола для Orange Pi Zero 3W: вертикальная карусель приложений с такой же неоновой кометой и индикатор температуры CPU. Общий визуальный язык с этим курсором.
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE).
