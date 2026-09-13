@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Курсор-комета
+Comment=Своя отрисовка курсора (неоновая комета) + скрытие системного курсора
+Exec=/home/orangepi/.local/bin/cursor-comet.py --hide-cursor
+X-GNOME-Autostart-enabled=true
+Terminal=false
