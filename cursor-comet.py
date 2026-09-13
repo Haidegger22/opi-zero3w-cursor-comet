@@ -51,6 +51,7 @@ class Comet(Gtk.Window):
         self._win_pos = (None, None)
         self._hide_t = 0.0
         self._raise_t = 0.0      # время последнего подъёма над панелью
+        self._theme_t = 0.0      # время последней проверки темы курсора
         self.connect("draw", self.on_draw)
         self.connect("realize", self.on_realize)
         self.connect("map-event", self.on_map)
@@ -86,6 +87,23 @@ class Comet(Gtk.Window):
         except Exception:
             pass
 
+    def _ensure_theme(self):
+        """Восстанавливает невидимую тему, если её сбросили (смена оформления)."""
+        try:
+            out = subprocess.run(["gsettings", "get", "org.mate.peripherals-mouse",
+                                  "cursor-theme"], capture_output=True, text=True,
+                                 timeout=5).stdout
+            if "comet-hidden" not in out:
+                for key in ("org.mate.peripherals-mouse", "org.gnome.desktop.interface"):
+                    subprocess.run(["gsettings", "set", key, "cursor-theme",
+                                    "comet-hidden"], check=False)
+                subprocess.run(["xsetroot", "-cursor", "/tmp/comet_empty.xbm",
+                                "/tmp/comet_empty.xbm"], check=False)
+                print("[comet] тему сбросили — восстановил", flush=True)
+        except Exception:
+            pass
+        return True
+
     def tick(self):
         try:
             p = self.root.query_pointer()
@@ -96,6 +114,9 @@ class Comet(Gtk.Window):
         if HIDE and now - self._hide_t > 0.2:
             self._hide_t = now
             self._hide_everywhere()
+        if HIDE and now - self._theme_t > 5.0:
+            self._theme_t = now
+            self._ensure_theme()
         # периодически поднимаем окно: иначе панель MATE (тоже DOCK) накрывает комету
         if now - self._raise_t > 0.3:
             self._raise_t = now
