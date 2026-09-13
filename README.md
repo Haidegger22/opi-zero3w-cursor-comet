@@ -17,6 +17,11 @@
 
 ## Установка
 
+**Быстрый путь (copy-paste всех команд):** см. **[INSTALL.md](INSTALL.md)** — просто
+вставляй блоки в терминал по порядку.
+
+Ниже — что именно делается:
+
 ```bash
 # 1. зависимости (Debian 13)
 sudo apt install python3-gi python3-gi-cairo python3-xlib gir1.2-gtk-3.0
