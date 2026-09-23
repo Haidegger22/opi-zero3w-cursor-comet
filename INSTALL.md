@@ -402,7 +402,7 @@ chmod +x $HOME/.config/autostart/cursor-comet.desktop 2>/dev/null || true
 
 ### 4. game-cursor.py
 
-```
+```python
 #!/usr/bin/env python3
 """game-cursor.py — курсор для игр на Zero 3W.
 
@@ -448,6 +448,34 @@ def log(msg):
             f.write(line + "\n")
     except Exception:
         pass
+
+
+RECENTER_FLAG = "/tmp/m5hub-recenter"   # разрешение m5hub переносить указатель в центр
+_recenter_flag = None                   # что выставлено сейчас (чтобы не дёргать диск зря)
+
+
+def sync_recenter_flag(need):
+    """Разрешить m5hub переносить указатель в центр экрана у края.
+
+    Перенос нужен только в матче: там курсор ведёт сама игра, а игровой мост
+    читает прыжки указателя — без переноса движение «упирается в стенку». На
+    рабочем столе и в меню перенос виден как прыжок курсора в центр, поэтому там
+    он запрещён. m5hub проверяет наличие этого файла в цикле движения.
+    """
+    global _recenter_flag
+    if _recenter_flag == need:
+        return
+    try:
+        if need:
+            with open(RECENTER_FLAG, "w") as f:
+                f.write("%d\n" % os.getpid())
+        else:
+            if os.path.exists(RECENTER_FLAG):
+                os.remove(RECENTER_FLAG)
+        _recenter_flag = need
+        log("перенос указателя у края: %s" % ("разрешён (матч)" if need else "запрещён"))
+    except Exception as e:
+        log("пометку переноса не удалось переключить: %r" % (e,))
 
 
 def walk(w, depth=0):
@@ -677,13 +705,33 @@ def main():
                     if pids_of(POINTER):
                         stop_pointer()
                 tick_n += 1
+            # перенос указателя у края разрешаем только в матче
+            sync_recenter_flag(mode == "engine")
         except Exception as e:
             log("ошибка: %r" % (e,))
         time.sleep(POLL)
 
 
+def _cleanup_flag(*_):
+    """Снять пометку переноса: с ней m5hub переносит указатель в центр и на столе."""
+    try:
+        if os.path.exists(RECENTER_FLAG):
+            os.remove(RECENTER_FLAG)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
-    main()
+    import signal
+    for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            signal.signal(_sig, lambda *_: (_cleanup_flag(), os._exit(0)))
+        except Exception:
+            pass
+    try:
+        main()
+    finally:
+        _cleanup_flag()
 ```
 
 ### 5. joy-to-keys.py
