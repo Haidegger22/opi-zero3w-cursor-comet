@@ -1,0 +1,18 @@
+[Unit]
+Description=Курсор для игр (Hedgewars): комета в меню и на рабочем столе, мост клавиш в матче
+Documentation=file:/home/orangepi/.hermes/skills/devops/x11-cursor-and-overlay-control/SKILL.md
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/orangepi/.Xauthority
+ExecStart=/usr/bin/python3 /home/orangepi/.local/bin/game-cursor.py
+# сторож следит за играми каждую секунду и сам поднимает комету/мост;
+# если он упадёт — служба поднимет его заново
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

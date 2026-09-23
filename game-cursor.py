@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""game-cursor.py — курсор для игр на Zero 3W.
+
+Рабочий стол рисует курсор «кометой» (cursor-comet.py): у неё шлейф, и диск кометы
+уходит в сторону от настоящей точки указателя. В игре это мешает — например в меню
+выбора оружия непонятно, куда именно попадёт клик.
+
+Поведение:
+  • на экране окно игры -> комета останавливается, включается game-pointer.py
+    (точный прицел ровно в точке указателя, клики проходят сквозь него);
+  • игр на экране нет   -> прицел выключается, комета возвращается как была.
+
+Скрипт кометы не изменяется: сторож только запускает и останавливает процессы.
+
+Запуск: game-cursor.py
+Лог:    /tmp/game-cursor.log
+"""
+import os
+import subprocess
+import sys
+import time
+
+from Xlib import X, XK, display, protocol
+from Xlib.ext import xtest
+
+CURSOR_KEYS = ("KP_4", "KP_6", "KP_8", "KP_2")   # клавиши игрового курсора (мост)
+
+COMET = "/home/orangepi/.local/bin/cursor-comet.py"
+COMET_ARGS = ["--hide-cursor"]
+POINTER = "/home/orangepi/.local/bin/game-pointer.py"
+BRIDGE = "/home/orangepi/.local/bin/joy-to-keys.py"
+GAMES = {"hedgewars", "hwengine", "warmux", "wormux", "retroarch", "supertux2", "0ad"}
+POLL = 1.0          # период опроса, секунды
+GRACE = 1           # секунд устойчивости перед переключением
+LOG = "/tmp/game-cursor.log"
+
+
+def log(msg):
+    line = time.strftime("%H:%M:%S ") + msg
+    print(line, flush=True)
+    try:
+        with open(LOG, "a") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def walk(w, depth=0):
+    """Обходим дерево окон: оконный менеджер заворачивает окно игры в рамку,
+    поэтому класс игры виден только в глубине дерева."""
+    yield w
+    if depth >= 3:
+        return
+    try:
+        for c in w.query_tree().children:
+            yield from walk(c, depth + 1)
+    except Exception:
+        return
+
+
+def game_windows(d):
+    """Список окон игр, которые сейчас реально видны на экране."""
+    out = []
+    try:
+        top = d.screen().root.query_tree().children
+    except Exception:
+        return out
+    for t in top:
+        for w in walk(t):
+            try:
+                at = w.get_attributes()
+                if at.map_state != X.IsViewable:
+                    continue
+                cls = w.get_wm_class() or ()
+                names = {str(c).lower() for c in cls}
+                if names & GAMES:
+                    geo = w.get_geometry()
+                    # игровым считаем только окно, занимающее заметную часть экрана
+                    if geo.width > 400 and geo.height > 300:
+                        out.append((w.id, tuple(cls), geo.width, geo.height))
+            except Exception:
+                continue
+    return out
+
+
+def ensure_fullscreen(d, win_id, env):
+    """Окно игры должно занимать весь экран.
+
+    Двумя шагами: (1) просим у оконного менеджера настоящий полный экран;
+    (2) проверяем факт — если окно всё равно стоит со сдвигом на рамку
+    (заголовок съедает ~35 px снизу), сдвигаем его в угол экрана. Иначе нижняя
+    полоса с кнопками уходит за край.
+    """
+    try:
+        root = d.screen().root
+        wm_state = d.intern_atom("_NET_WM_STATE")
+        fs = d.intern_atom("_NET_WM_STATE_FULLSCREEN")
+        win = d.create_resource_object("window", win_id)
+        ev = protocol.event.ClientMessage(window=win, client_type=wm_state,
+                                          data=(32, [1, fs, 0, 1, 0]))
+        root.send_event(ev,
+                        event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+        d.flush()
+    except Exception as e:
+        log("полный экран не удался: %r" % (e,))
+
+    try:
+        res = subprocess.run(["xdotool", "getwindowgeometry", str(win_id)],
+                             capture_output=True, text=True, env=env)
+        pos = ""
+        for line in res.stdout.splitlines():
+            if "Position:" in line:
+                pos = line.split("Position:")[1].strip().split()[0]
+        if pos and pos != "0,0":
+            subprocess.run(["xdotool", "windowmove", str(win_id), "0", "0"],
+                           capture_output=True, env=env)
+            log("окно %s сдвинуто в угол экрана (было %s)" % (win_id, pos))
+    except Exception as e:
+        log("сдвиг окна не удался: %r" % (e,))
+
+
+def pids_of(pattern):
+    r = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
+    return [int(x) for x in r.stdout.split() if x.strip().isdigit()]
+
+
+def kill_by_pattern(pattern):
+    for p in pids_of(pattern):
+        subprocess.run(["kill", str(p)], capture_output=True)
+
+
+def start_pointer(env):
+    if pids_of(POINTER):
+        return
+    subprocess.Popen([sys.executable, POINTER], stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+    log("включён точный курсор игры")
+
+
+def stop_pointer():
+    kill_by_pattern(POINTER)
+    log("точный курсор игры выключен")
+
+
+def start_comet(env):
+    if pids_of(COMET):
+        return
+    subprocess.Popen([sys.executable, COMET] + COMET_ARGS,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True, env=env)
+    log("комета возвращена (рабочий стол)")
+
+
+def start_bridge(env):
+    """В матче: игра ведёт свой курсор, движения указателя она не видит, но клавиши
+    перемещения курсора принимает — поэтому переводим движение джойстика в клавиши."""
+    if pids_of(BRIDGE):
+        return
+    subprocess.Popen([sys.executable, BRIDGE],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True, env=env)
+    log("включён мост «джойстик → клавиши курсора»")
+
+
+def release_cursor_keys():
+    """Отпустить клавиши игрового курсора после остановки моста.
+
+    Если мост убит ровно между нажатием и отпусканием, клавиша остаётся
+    «зажатой» в X: сервер повторяет её сам ~30 раз в секунду, и в приложении это
+    выглядит как бесконечная прокрутка (поймано 24.09.2026 — зажатый KP_Down).
+    Снимается только явным KeyRelease, перезапуск драйвера не помогает.
+    """
+    try:
+        d = display.Display()
+        for name in CURSOR_KEYS:
+            code = d.keysym_to_keycode(XK.string_to_keysym(name))
+            if code:
+                xtest.fake_input(d, X.KeyRelease, code)
+        d.sync()
+    except Exception as e:
+        log("клавиши курсора не отпустились: %r" % (e,))
+
+
+def stop_bridge():
+    kill_by_pattern(BRIDGE)
+    time.sleep(0.2)     # дать процессу уйти, чтобы отпускание не спорило с его нажатием
+    release_cursor_keys()
+
+
+def is_engine_window(wins):
+    """Матч (движок hwengine) или фронтенд (меню, hedgewars)."""
+    for _wid, cls, _w, _h in wins:
+        if {str(c).lower() for c in cls} & {"hwengine"}:
+            return True
+    return False
+
+
+def main():
+    env = dict(os.environ)
+    env.setdefault("DISPLAY", ":0")
+    d = display.Display()
+    mode = "none"          # none | frontend (меню игры) | engine (матч)
+    pending_mode = None
+    pending_since = None
+    tick_n = 0
+    log("старт: слежу за играми " + ", ".join(sorted(GAMES)))
+
+    while True:
+        try:
+            wins = game_windows(d)
+            engine = is_engine_window(wins)
+            want_mode = "engine" if engine else ("frontend" if wins else "none")
+
+            if want_mode != mode:
+                # режим хочет измениться — ждём GRACE секунд устойчивости
+                if pending_mode != want_mode:
+                    pending_mode = want_mode
+                    pending_since = time.time()
+                elif time.time() - pending_since >= GRACE:
+                    if want_mode == "engine":
+                        # ИДЁТ МАТЧ: игра ведёт свой курсор и не видит движение указателя,
+                        # сделанное виртуально. Комету и оверлей убираем, движение
+                        # джойстика переводим в клавиши игрового курсора.
+                        kill_by_pattern(COMET)
+                        stop_pointer()
+                        start_bridge(env)
+                        log("МАТЧ %s — курсор игры + мост клавиш" % (wins[0][1],))
+                    elif want_mode == "frontend":
+                        # МЕНЮ игры: мышь и джойстик тут работают сами, а оверлей-прицел
+                        # только мешал — оставляем комету, как было раньше.
+                        stop_bridge()
+                        stop_pointer()
+                        start_comet(env)
+                        for wid, cls, gw, gh in wins:
+                            ensure_fullscreen(d, wid, env)
+                        log("МЕНЮ игры %s — комета, мост выключен" % (wins[0][1],))
+                    else:
+                        stop_bridge()
+                        stop_pointer()
+                        start_comet(env)
+                        log("рабочий стол — комета вернулась")
+                    mode = want_mode
+                    pending_mode = None
+            else:
+                pending_mode = None
+                # присмотр: если нужный компонент умер — поднимаем его заново
+                if mode == "engine":
+                    if not pids_of(BRIDGE):
+                        log("мост пропал — поднимаю заново")
+                        start_bridge(env)
+                    if pids_of(COMET):
+                        kill_by_pattern(COMET)
+                    if pids_of(POINTER):
+                        stop_pointer()
+                    if tick_n % 5 == 0:      # раз в ~5 с подтверждаем полный экран
+                        for wid, cls, gw, gh in wins:
+                            ensure_fullscreen(d, wid, env)
+                elif mode == "frontend":
+                    if not pids_of(COMET):
+                        log("комета пропала — поднимаю заново")
+                        start_comet(env)
+                    if pids_of(BRIDGE):
+                        stop_bridge()
+                    if pids_of(POINTER):
+                        stop_pointer()
+                else:
+                    if not pids_of(COMET):
+                        log("комета пропала — поднимаю заново")
+                        start_comet(env)
+                    if pids_of(BRIDGE):
+                        stop_bridge()
+                    if pids_of(POINTER):
+                        stop_pointer()
+                tick_n += 1
+        except Exception as e:
+            log("ошибка: %r" % (e,))
+        time.sleep(POLL)
+
+
+if __name__ == "__main__":
+    main()
