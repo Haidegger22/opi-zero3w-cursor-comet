@@ -434,7 +434,11 @@ COMET = "/home/orangepi/.local/bin/cursor-comet.py"
 COMET_ARGS = ["--hide-cursor"]
 POINTER = "/home/orangepi/.local/bin/game-pointer.py"
 BRIDGE = "/home/orangepi/.local/bin/joy-to-keys.py"
-GAMES = {"hedgewars", "hwengine", "warmux", "wormux", "retroarch", "supertux2", "0ad"}
+GAMES = {"hedgewars", "hwengine", "warmux", "wormux", "retroarch", "supertux2", "0ad", "wa.exe"}
+# Игры, которые ведут свой курсор сами (Worms Armageddon, класс wa.exe):
+# указатель они перехватывают и центруют, поэтому комета висит на месте и мешает —
+# в этом режиме комету убираем, а свой оверлей-прицел и мост клавиш не включаем.
+OWN_CURSOR = {"wa.exe"}
 POLL = 1.0          # период опроса, секунды
 GRACE = 1           # секунд устойчивости перед переключением
 LOG = "/tmp/game-cursor.log"
@@ -451,7 +455,9 @@ def log(msg):
 
 
 RECENTER_FLAG = "/tmp/m5hub-recenter"   # разрешение m5hub переносить указатель в центр
+DIRECT_FLAG = "/tmp/m5hub-direct"       # прямой ход указателя без сглаживания (игры со своим курсором)
 _recenter_flag = None                   # что выставлено сейчас (чтобы не дёргать диск зря)
+_direct_flag = None
 
 
 def sync_recenter_flag(need):
@@ -476,6 +482,29 @@ def sync_recenter_flag(need):
         log("перенос указателя у края: %s" % ("разрешён (матч)" if need else "запрещён"))
     except Exception as e:
         log("пометку переноса не удалось переключить: %r" % (e,))
+
+
+def sync_direct_flag(need):
+    """Прямой ход указателя без сглаживания — пока идёт игра со своим курсором.
+
+    m5hub сглаживает движение (30% к цели за такт), на рабочем столе это плавность,
+    а в игре читается как «курсор доигрывает прошлые движения» (Артём, 06.10.2026).
+    Флаг включает в m5hub прямой ход; снимается, когда игра закрыта.
+    """
+    global _direct_flag
+    if _direct_flag == need:
+        return
+    try:
+        if need:
+            with open(DIRECT_FLAG, "w") as f:
+                f.write("%d\n" % os.getpid())
+        else:
+            if os.path.exists(DIRECT_FLAG):
+                os.remove(DIRECT_FLAG)
+        _direct_flag = need
+        log("прямой ход указателя (без сглаживания): %s" % ("включён" if need else "выключен"))
+    except Exception as e:
+        log("пометку прямого хода не удалось переключить: %r" % (e,))
 
 
 def walk(w, depth=0):
@@ -628,6 +657,14 @@ def is_engine_window(wins):
     return False
 
 
+def is_own_cursor_window(wins):
+    """Игра с собственным курсором (Worms): она сама рисует и ведёт указатель."""
+    for _wid, cls, _w, _h in wins:
+        if {str(c).lower() for c in cls} & OWN_CURSOR:
+            return True
+    return False
+
+
 def main():
     env = dict(os.environ)
     env.setdefault("DISPLAY", ":0")
@@ -642,7 +679,10 @@ def main():
         try:
             wins = game_windows(d)
             engine = is_engine_window(wins)
-            want_mode = "engine" if engine else ("frontend" if wins else "none")
+            own = is_own_cursor_window(wins)
+            want_mode = ("engine" if engine else
+                         "owncursor" if own else
+                         "frontend" if wins else "none")
 
             if want_mode != mode:
                 # режим хочет измениться — ждём GRACE секунд устойчивости
@@ -658,6 +698,14 @@ def main():
                         stop_pointer()
                         start_bridge(env)
                         log("МАТЧ %s — курсор игры + мост клавиш" % (wins[0][1],))
+                    elif want_mode == "owncursor":
+                        # ИГРА СО СВОИМ КУРСОРОМ (Worms Armageddon): указатель она
+                        # перехватывает и центрует, курсор ведёт и рисует сама —
+                        # оставляем только её курсор: комету, оверлей и мост выключаем.
+                        kill_by_pattern(COMET)
+                        stop_pointer()
+                        stop_bridge()
+                        log("ИГРА %s — курсор ведёт игра, комета убрана" % (wins[0][1],))
                     elif want_mode == "frontend":
                         # МЕНЮ игры: мышь и джойстик тут работают сами, а оверлей-прицел
                         # только мешал — оставляем комету, как было раньше.
@@ -688,6 +736,15 @@ def main():
                     if tick_n % 5 == 0:      # раз в ~5 с подтверждаем полный экран
                         for wid, cls, gw, gh in wins:
                             ensure_fullscreen(d, wid, env)
+                elif mode == "owncursor":
+                    # присмотр для игры со своим курсором: комета должна быть снята,
+                    # оверлей и мост — выключены
+                    if pids_of(COMET):
+                        kill_by_pattern(COMET)
+                    if pids_of(POINTER):
+                        stop_pointer()
+                    if pids_of(BRIDGE):
+                        stop_bridge()
                 elif mode == "frontend":
                     if not pids_of(COMET):
                         log("комета пропала — поднимаю заново")
@@ -707,18 +764,21 @@ def main():
                 tick_n += 1
             # перенос указателя у края разрешаем только в матче
             sync_recenter_flag(mode == "engine")
+            # прямой ход указателя (без сглаживания) — только в игре со своим курсором
+            sync_direct_flag(mode == "owncursor")
         except Exception as e:
             log("ошибка: %r" % (e,))
         time.sleep(POLL)
 
 
 def _cleanup_flag(*_):
-    """Снять пометку переноса: с ней m5hub переносит указатель в центр и на столе."""
-    try:
-        if os.path.exists(RECENTER_FLAG):
-            os.remove(RECENTER_FLAG)
-    except Exception:
-        pass
+    """Снять пометки: с ними m5hub переносит указатель в центр и ходит без сглаживания."""
+    for flag in (RECENTER_FLAG, DIRECT_FLAG):
+        try:
+            if os.path.exists(flag):
+                os.remove(flag)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
