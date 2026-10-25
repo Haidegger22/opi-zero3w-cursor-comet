@@ -3,7 +3,9 @@
 Кастомный курсор с собственной отрисовкой: **чёрное ядро + светящийся ореол +
 затухающий хвост**. Системный курсор при этом скрывается полностью.
 
-Проверено на **Orange Pi Zero 3W** (Debian 13 Trixie, MATE, X11, 1024×600).
+Проверено на **Orange Pi Zero 3W** (Debian 13 Trixie, MATE, X11, 1024×600) и на
+**Orange Pi 4 Pro** (Allwinner A733, та же система, панель 5″ по HDMI) — отличия для
+второй платы в [boards/4pro.md](boards/4pro.md).
 
 ![Курсор на рабочем столе](docs/cursor-desktop.png)
 
@@ -11,9 +13,11 @@
 
 | Файл | Назначение |
 |---|---|
-| `cursor-comet.py` | сам курсор: рисует комету и следует за мышью (60 fps) |
+| `cursor-comet.py` | сам курсор: рисует комету и следует за мышью (60 fps); флаги `--hide-cursor`, `--no-xfixes` |
 | `make_empty_cursor.py` | создаёт невидимую тему курсора (`comet-hidden`) |
 | `autostart/cursor-comet.desktop` | автозапуск при входе в систему |
+| `boards/zero3w.md` | эталонная плата: полный комплект, игровая связка |
+| `boards/4pro.md` | Orange Pi 4 Pro: флаг `--no-xfixes`, почему без него шумит RandR |
 
 ## Установка
 
@@ -126,6 +130,36 @@ ffmpeg -f x11grab -video_size 1024x600 -i :0 -frames:v 1 -draw_mouse 1 -y /tmp/s
 
 Сторож живёт как пользовательская служба systemd с автоперезапуском — если он упадёт, служба поднимет его сама. Установка — в `INSTALL.md`, разбор граблей и
 диагностика — в скилле агента `zero3w-gaming/references/hedgewars-joystick-cursor.md`.
+
+## Другая плата: Orange Pi 4 Pro
+
+Тот же скрипт работает и на 4 Pro, но **с флагом `--no-xfixes`**:
+
+```bash
+~/.local/bin/cursor-comet.py --hide-cursor --no-xfixes
+```
+
+Причина — не отрисовка, а вызовы XFixes. В python-xlib `window.xfixes_hide_cursor()`
+на этой плате уходит в RandR-запрос к CRTC, которого нет на драйвере, и возвращает
+`BadRRCrtcError (major_opcode=138, minor_opcode=29)` на каждый вызов: за 3 минуты
+в отладочный файл набегало 9,2 МБ. Замер, которым это найдено:
+
+| Что вызывается в цикле | Результат |
+|---|---|
+| `root.query_pointer()` | ни одной ошибки |
+| `root.xfixes_hide_cursor()` | ошибка на каждый вызов |
+
+Без XFixes курсор всё равно скрыт: работают невидимая тема `comet-hidden` и пустой
+root-курсор через `xsetroot`. С флагом в журнале остаются только три строки старта.
+
+Ярлык автозапуска на 4 Pro:
+
+```
+Exec=sh -c '/home/orangepi/.local/bin/cursor-comet.py --hide-cursor --no-xfixes >/dev/null 2>&1'
+```
+
+Подробности (что копировать, как проверить кадром, грабли запуска по SSH) —
+в [boards/4pro.md](boards/4pro.md).
 
 ## Связанные проекты
 

@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # Курсор-«комета»: своя отрисовка курсора. Компактное окно 96x96,
 # следует за указателем (меньше перерисовок → нет мерцания на llvmpipe).
-# Запуск: cursor-comet.py [--hide-cursor]
+# Запуск: cursor-comet.py [--hide-cursor] [--no-xfixes]
+#   --hide-cursor  скрыть системный курсор (тема comet-hidden + пустой root-курсор)
+#   --no-xfixes    не трогать XFixes (нужно на платах, где xfixes_hide_cursor
+#                  уходит в RandR-запрос к отсутствующему CRTC и сыпет
+#                  BadRRCrtcError — например Orange Pi 4 Pro)
 import os, sys, math, time, signal, subprocess
 import gi
 gi.require_version("Gtk", "3.0")
@@ -12,6 +16,7 @@ from Xlib.ext import xfixes
 import atexit
 
 HIDE = "--hide-cursor" in sys.argv
+NO_XFIXES = "--no-xfixes" in sys.argv
 THEME_FILE = "/tmp/comet_prev_cursor_theme"
 W = H = 96            # размер окна
 CORE_R = 5.0          # радиус чёрного ядра
@@ -77,6 +82,12 @@ class Comet(Gtk.Window):
         return False
 
     def _hide_everywhere(self):
+        if NO_XFIXES:
+            # На части плат (Orange Pi 4 Pro) xfixes_hide_cursor в python-xlib
+            # уходит в RandR-запрос к CRTC, которого нет на драйвере:
+            # BadRRCrtcError каждые 16 мс. Скрытие и так обеспечивает тема
+            # comet-hidden (пустые курсоры), поэтому XFixes можно не дёргать.
+            return
         try:
             self.root.xfixes_hide_cursor()
             for w in self.root.query_tree().children:
@@ -173,7 +184,8 @@ class Comet(Gtk.Window):
 def main():
     prev_theme = None
     if HIDE:
-        xfixes.hide_cursor(display.Display().screen().root)
+        if not NO_XFIXES:
+            xfixes.hide_cursor(display.Display().screen().root)
         try:
             old = subprocess.run(["gsettings", "get", "org.mate.peripherals-mouse",
                                   "cursor-theme"], capture_output=True, text=True).stdout.strip()
